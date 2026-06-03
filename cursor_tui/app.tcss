@@ -1,0 +1,164 @@
+/* ── cursor-tui theme ────────────────────────────────────────────────── */
+/* Palette: slate bg, muted accents, high-contrast text                  */
+
+$bg: #1a1b26;
+$surface: #1f2335;
+$surface-bright: #292e42;
+$border: #3b4261;
+$border-focus: #7aa2f7;
+$text: #c0caf5;
+$text-muted: #565f89;
+$text-dim: #414868;
+$accent: #7aa2f7;
+$green: #9ece6a;
+$red: #f7768e;
+$yellow: #e0af68;
+$cyan: #7dcfff;
+$magenta: #bb9af7;
+
+Screen {
+    background: $bg;
+    color: $text;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────── */
+
+#header {
+    dock: top;
+    height: 3;
+    background: $surface;
+    border-bottom: solid $border;
+    padding: 0 2;
+    layout: horizontal;
+}
+
+#header-title {
+    width: auto;
+    padding: 1 0;
+    color: $accent;
+    text-style: bold;
+}
+
+#header-stats {
+    width: 1fr;
+    padding: 1 2;
+    color: $text-muted;
+    content-align: right middle;
+}
+
+/* ── Status strip (cost + state counts) ──────────────────────────────── */
+
+#status-strip {
+    dock: top;
+    height: 1;
+    background: $surface-bright;
+    padding: 0 2;
+    color: $text-muted;
+}
+
+/* ── Main content area ───────────────────────────────────────────────── */
+
+#body {
+    layout: horizontal;
+}
+
+/* ── Agent table ─────────────────────────────────────────────────────── */
+
+#table-pane {
+    width: 1fr;
+}
+
+#agent-table {
+    height: 1fr;
+    background: $bg;
+    scrollbar-size: 1 1;
+}
+
+#agent-table > .datatable--header {
+    background: $surface;
+    color: $text-muted;
+    text-style: bold;
+}
+
+#agent-table > .datatable--cursor {
+    background: $surface-bright;
+    color: $text;
+}
+
+#agent-table > .datatable--header-cursor {
+    background: $surface;
+    color: $text-muted;
+    text-style: bold;
+}
+
+/* ── Wave sidebar ────────────────────────────────────────────────────── */
+
+#wave-pane {
+    width: 32;
+    background: $surface;
+    border-left: solid $border;
+    padding: 1;
+    overflow-y: auto;
+}
+
+#wave-pane.collapsed {
+    display: none;
+}
+
+
+/* ── Detail panel ────────────────────────────────────────────────────── */
+
+#detail-pane {
+    height: 16;
+    background: $surface;
+    border-top: solid $border;
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#detail-pane.collapsed {
+    display: none;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+
+#footer {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+    border-top: solid $border;
+    padding: 0 1;
+    color: $text-dim;
+}
+
+/* ── Confirm dialog ──────────────────────────────────────────────────── */
+
+ConfirmDialog {
+    align: center middle;
+}
+
+#confirm-box {
+    width: 56;
+    height: auto;
+    max-height: 12;
+    background: $surface;
+    border: thick $border-focus;
+    padding: 2 3;
+}
+
+#confirm-message {
+    width: 100%;
+    content-align: center middle;
+    color: $text;
+    margin-bottom: 1;
+}
+
+#confirm-buttons {
+    height: 3;
+    align: center middle;
+}
+
+#confirm-buttons Button {
+    margin: 0 1;
+    min-width: 12;
+}
