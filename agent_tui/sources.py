@@ -23,6 +23,14 @@ class LogSource(Protocol):
         """Run an action (merge/retry/discard) on an agent. Returns (ok, message)."""
         ...
 
+    def tail_log(self, agent_name: str, lines: int = 50) -> list[dict]:
+        """Return the last N parsed events from an agent's JSONL log."""
+        ...
+
+    def get_diff(self, agent_name: str, stat_only: bool = False) -> str:
+        """Return git diff of an agent's worktree vs its HEAD. Returns empty string if no changes."""
+        ...
+
     def close(self) -> None: ...
 
 
@@ -79,6 +87,42 @@ class LocalSource:
         except Exception as e:
             return False, str(e)
 
+    def tail_log(self, agent_name: str, lines: int = 50) -> list[dict]:
+        import json
+        log_path = self._dir / f"{agent_name}.jsonl"
+        if not log_path.exists():
+            return []
+        try:
+            all_lines = log_path.read_text().strip().splitlines()
+            tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            events = []
+            for line in tail:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+            return events
+        except OSError:
+            return []
+
+    def get_diff(self, agent_name: str, stat_only: bool = False) -> str:
+        import subprocess
+        wt = Path.home() / ".cursor" / "worktrees" / self._repo.name / agent_name
+        if not wt.is_dir():
+            return "(worktree not found)"
+        cmd = ["git", "-C", str(wt), "diff"]
+        if stat_only:
+            cmd.append("--stat")
+        cmd.append("HEAD")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            return result.stdout if result.stdout else ""
+        except (subprocess.TimeoutExpired, Exception):
+            return "(diff failed)"
+
     def close(self) -> None:
         pass
 
@@ -119,6 +163,29 @@ class HttpSource:
             a.machine = self._name
             agents.append(a)
         return agents
+
+    def tail_log(self, agent_name: str, lines: int = 50) -> list[dict]:
+        import urllib.error
+        import urllib.request
+        url = f"{self._url}/projects/{self._project}/agent/{agent_name}/tail?lines={lines}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                data = json.loads(resp.read())
+            return data.get("events", [])
+        except (urllib.error.URLError, OSError, json.JSONDecodeError):
+            return []
+
+    def get_diff(self, agent_name: str, stat_only: bool = False) -> str:
+        import urllib.error
+        import urllib.request
+        url = f"{self._url}/projects/{self._project}/agent/{agent_name}/diff"
+        if stat_only:
+            url += "?stat=1"
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                return resp.read().decode()
+        except (urllib.error.URLError, OSError):
+            return "(remote diff unavailable)"
 
     def run_action(self, action: str, agent_name: str) -> tuple[bool, str]:
         import urllib.error

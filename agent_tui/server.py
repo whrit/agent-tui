@@ -12,6 +12,8 @@ from agent_tui.state import AgentState, scan_agents
 _RE_PROJECT_AGENTS = re.compile(r"^/projects/([^/]+)/agents$")
 _RE_PROJECT_AGENT = re.compile(r"^/projects/([^/]+)/agent/([^/]+)$")
 _RE_PROJECT_ACTION = re.compile(r"^/projects/([^/]+)/action/(merge|retry|discard)/([^/]+)$")
+_RE_PROJECT_AGENT_TAIL = re.compile(r"^/projects/([^/]+)/agent/([^/]+)/tail$")
+_RE_PROJECT_AGENT_DIFF = re.compile(r"^/projects/([^/]+)/agent/([^/]+)/diff$")
 # Legacy single-project routes (backward compat)
 _RE_LEGACY_AGENTS = re.compile(r"^/agents$")
 _RE_LEGACY_AGENT = re.compile(r"^/agent/([^/]+)$")
@@ -37,6 +39,12 @@ class LogHandler(BaseHTTPRequestHandler):
         if m := _RE_PROJECT_AGENT.match(self.path):
             self._serve_agent_detail(m.group(1), m.group(2))
             return
+        if m := _RE_PROJECT_AGENT_TAIL.match(self.path.split("?")[0]):
+            self._serve_agent_tail(m.group(1), m.group(2))
+            return
+        if m := _RE_PROJECT_AGENT_DIFF.match(self.path.split("?")[0]):
+            self._serve_agent_diff(m.group(1), m.group(2))
+            return
 
         # Legacy single-project routes (first project)
         if _RE_LEGACY_AGENTS.match(self.path):
@@ -60,6 +68,8 @@ class LogHandler(BaseHTTPRequestHandler):
                     "GET  /projects",
                     "GET  /projects/<name>/agents",
                     "GET  /projects/<name>/agent/<id>",
+                    "GET  /projects/<name>/agent/<id>/tail?lines=N",
+                    "GET  /projects/<name>/agent/<id>/diff?stat=1",
                     "POST /projects/<name>/action/{merge|retry|discard}/<agent>",
                     "GET  /health",
                 ],
@@ -159,12 +169,79 @@ class LogHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._json(500, {"error": str(e)})
 
+    def _serve_agent_tail(self, project: str, name: str):
+        logs_dir = self.projects.get(project)
+        if not logs_dir:
+            self._json(404, {"error": f"project '{project}' not found"})
+            return
+        # Parse ?lines=N from query string
+        lines = 50
+        if "?" in self.path:
+            import urllib.parse
+            qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+            lines = int(qs.get("lines", ["50"])[0])
+        log_path = logs_dir / f"{name}.jsonl"
+        if not log_path.exists():
+            self._json(404, {"error": f"agent '{name}' log not found"})
+            return
+        try:
+            all_lines = log_path.read_text().strip().splitlines()
+            tail = all_lines[-lines:] if len(all_lines) > lines else all_lines
+            events = []
+            for line in tail:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+            self._json(200, {"agent": name, "events": events, "count": len(events)})
+        except OSError as e:
+            self._json(500, {"error": str(e)})
+
+    def _serve_agent_diff(self, project: str, name: str):
+        logs_dir = self.projects.get(project)
+        if not logs_dir:
+            self._json(404, {"error": f"project '{project}' not found"})
+            return
+        repo = logs_dir.parent
+        wt = Path.home() / ".cursor" / "worktrees" / repo.name / name
+        if not wt.is_dir():
+            self._text(404, f"worktree not found: {wt}")
+            return
+        stat_only = False
+        if "?" in self.path:
+            import urllib.parse
+            qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+            stat_only = qs.get("stat", ["0"])[0] == "1"
+        cmd = ["git", "-C", str(wt), "diff"]
+        if stat_only:
+            cmd.append("--stat")
+        cmd.append("HEAD")
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            self._text(200, result.stdout or "(no changes)")
+        except subprocess.TimeoutExpired:
+            self._text(504, "diff timed out")
+        except Exception as e:
+            self._text(500, str(e))
+
     # ── Helpers ───────────────────────────────────────────────────────────
 
     def _json(self, code: int, data: dict):
         body = json.dumps(data, default=str).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _text(self, code: int, text: str):
+        body = text.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
@@ -231,6 +308,8 @@ def run_server(
     print("  POST /projects/<name>/action/merge/<agent>  — merge agent")
     print("  POST /projects/<name>/action/retry/<agent>  — retry agent")
     print("  POST /projects/<name>/action/discard/<agent>— discard agent")
+    print("  GET  /projects/<name>/agent/<id>/tail    — last N events (live)")
+    print("  GET  /projects/<name>/agent/<id>/diff    — worktree diff")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -10,7 +10,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import Button, DataTable, RichLog, Static
+from textual.widgets import Button, DataTable, Input, RichLog, Static
 
 from agent_tui.config import AppConfig
 from agent_tui.sources import LogSource, create_source, scan_all
@@ -89,10 +89,15 @@ class CursorTUI(App):
         Binding("k", "cursor_up", "Up", show=False),
         Binding("r", "retry", "Retry"),
         Binding("m", "merge", "Merge"),
-        Binding("d", "discard", "Discard"),
+        Binding("x", "discard", "Discard"),
         Binding("enter", "toggle_detail", "Detail"),
         Binding("w", "toggle_waves", "Waves"),
         Binding("p", "refresh_now", "Refresh"),
+        Binding("l", "toggle_live", "Live"),
+        Binding("d", "show_diff", "Diff"),
+        Binding("slash", "toggle_filter", "Filter", show=False),
+        Binding("s", "cycle_sort", "Sort"),
+        Binding("escape", "clear_filter", "Clear", show=False, priority=True),
         Binding("tab", "focus_next", "Focus", show=False),
         Binding("shift+tab", "focus_previous", "Focus", show=False),
     ]
@@ -112,6 +117,13 @@ class CursorTUI(App):
         self._agents: list[AgentState] = []
         self._detail_visible = True
         self._waves_visible = False
+        self._live_mode = False
+        self._detail_mode = "events"  # "events" | "diff" | "live"
+        self._filter_text = ""
+        self._filter_visible = False
+        self._sort_key = "name"
+        self._sort_keys_cycle = ["name", "state", "cost", "duration", "heartbeat"]
+        self._sort_index = 0
         self._sources: list[LogSource] = []
         self._multi_machine = False
 
@@ -136,6 +148,9 @@ class CursorTUI(App):
         # Status strip
         yield Static("", id="status-strip")
 
+        # Filter bar (hidden by default)
+        yield Input(placeholder="filter: type name or :state (esc to clear)", id="filter-bar", classes="collapsed")
+
         # Body: table + optional wave sidebar
         with Horizontal(id="body"):
             with Vertical(id="table-pane"):
@@ -151,10 +166,13 @@ class CursorTUI(App):
             "[#7aa2f7 bold]j/k[/] nav  "
             "[#7aa2f7 bold]enter[/] detail  "
             "[#7aa2f7 bold]w[/] waves  "
-            "[#7aa2f7 bold]tab[/] focus  "
+            "[#7aa2f7 bold]l[/] live  "
+            "[#7aa2f7 bold]d[/] diff  "
+            "[#7aa2f7 bold]/[/] filter  "
+            "[#7aa2f7 bold]s[/] sort  "
             "[#7aa2f7 bold]r[/] retry  "
             "[#7aa2f7 bold]m[/] merge  "
-            "[#7aa2f7 bold]d[/] discard  "
+            "[#7aa2f7 bold]x[/] discard  "
             "[#7aa2f7 bold]p[/] refresh",
             id="footer",
         )
@@ -177,14 +195,43 @@ class CursorTUI(App):
     # ── Data refresh ──────────────────────────────────────────────────────
 
     def _refresh_data(self) -> None:
-        self._agents = scan_all(self._sources, self._cfg.display.stall_secs)
+        all_agents = scan_all(self._sources, self._cfg.display.stall_secs)
+        self._all_agents = all_agents
+        self._agents = self._apply_filter(all_agents)
+        self._agents = self._apply_sort(self._agents)
         self._update_table()
         self._update_header()
         self._update_status_strip()
         if self._detail_visible and self.selected_agent:
-            self._render_detail(self.selected_agent)
+            if self._detail_mode == "live":
+                self._render_live_log(self.selected_agent)
+            elif self._detail_mode == "diff":
+                pass  # diff is rendered on-demand, not on refresh
+            else:
+                self._render_detail(self.selected_agent)
         if self._waves_visible:
             self._render_waves()
+
+    def _apply_filter(self, agents: list[AgentState]) -> list[AgentState]:
+        if not self._filter_text:
+            return agents
+        ft = self._filter_text.strip().lower()
+        if ft.startswith(":"):
+            state_filter = ft[1:]
+            return [a for a in agents if a.state.lower() == state_filter]
+        return [a for a in agents if ft in a.name.lower()]
+
+    def _apply_sort(self, agents: list[AgentState]) -> list[AgentState]:
+        r = self._cfg.rates
+        key_map = {
+            "name": lambda a: a.name.lower(),
+            "state": lambda a: (0 if a.state == "run" else 1 if a.state == "STALL" else 2 if a.state == "ERROR" else 3 if a.state == "DIED" else 4),
+            "cost": lambda a: -a.tokens.cost(r.input, r.output, r.cache),
+            "duration": lambda a: -(a.duration_s or a.wall_clock_s),
+            "heartbeat": lambda a: -a.heartbeat_s,
+        }
+        fn = key_map.get(self._sort_key, key_map["name"])
+        return sorted(agents, key=fn)
 
     def _update_table(self) -> None:
         table = self.query_one("#agent-table", DataTable)
@@ -225,27 +272,32 @@ class CursorTUI(App):
                     break
 
     def _update_header(self) -> None:
-        done = sum(1 for a in self._agents if a.state == "DONE")
-        errors = sum(1 for a in self._agents if a.state in ("ERROR", "DIED"))
-        running = sum(1 for a in self._agents if a.state in ("run", "STALL"))
-        total = len(self._agents)
+        src_agents = getattr(self, "_all_agents", self._agents)
+        done = sum(1 for a in src_agents if a.state == "DONE")
+        errors = sum(1 for a in src_agents if a.state in ("ERROR", "DIED"))
+        running = sum(1 for a in src_agents if a.state in ("run", "STALL"))
+        total = len(src_agents)
+        filtered = len(self._agents)
         machines = " ".join(f"[#565f89]{s.machine_name}[/]" for s in self._sources)
+
+        filter_tag = f"  [#e0af68]filter: {filtered}/{total}[/]" if self._filter_text else ""
 
         stats = self.query_one("#header-stats", Static)
         stats.update(
             f"[#9ece6a]● {done} ok[/]  "
             f"[#7dcfff]◐ {running} run[/]  "
             f"[#f7768e]✗ {errors} err[/]  "
-            f"[#565f89]│[/]  {total} total  "
+            f"[#565f89]│[/]  {total} total{filter_tag}  "
             f"[#565f89]│[/]  {machines} "
         )
 
     def _update_status_strip(self) -> None:
         r = self._cfg.rates
+        src_agents = getattr(self, "_all_agents", self._agents)
         total_tokens = TokenUsage(
-            input=sum(a.tokens.input for a in self._agents),
-            output=sum(a.tokens.output for a in self._agents),
-            cache=sum(a.tokens.cache for a in self._agents),
+            input=sum(a.tokens.input for a in src_agents),
+            output=sum(a.tokens.output for a in src_agents),
+            cache=sum(a.tokens.cache for a in src_agents),
         )
         strip = self.query_one("#status-strip", Static)
         if r.input and r.output:
@@ -265,7 +317,12 @@ class CursorTUI(App):
         if event.row_key and event.row_key.value:
             self.selected_agent = str(event.row_key.value)
             if self._detail_visible:
-                self._render_detail(self.selected_agent)
+                if self._detail_mode == "live":
+                    self._render_live_log(self.selected_agent)
+                elif self._detail_mode == "diff":
+                    self._render_diff(self.selected_agent)
+                else:
+                    self._render_detail(self.selected_agent)
 
     def _render_detail(self, key: str) -> None:
         panel = self.query_one("#detail-pane", RichLog)
@@ -344,6 +401,104 @@ class CursorTUI(App):
 
             panel.write(f"  {ts_str}[#414868]{label}[/]{extra}")
 
+    def _render_live_log(self, key: str) -> None:
+        panel = self.query_one("#detail-pane", RichLog)
+        panel.clear()
+        agent = self._find_agent(key)
+        if not agent:
+            return
+
+        src = self._source_for(agent.machine)
+        if not src:
+            return
+
+        dot, color = STATE_INDICATOR.get(agent.state, ("○", "#565f89"))
+        panel.write(
+            f"[{color} bold]{dot} {agent.name}[/]  "
+            f"[{color}]{agent.state}[/]  "
+            f"[#e0af68 bold]LIVE[/]  "
+            f"[#565f89]session={agent.session_id or '—'}[/]"
+        )
+        panel.write(f"[#3b4261]{'─' * 72}[/]")
+
+        events = src.tail_log(agent.name, lines=40)
+        for ev in events:
+            t = ev.get("type", "?")
+            sub = ev.get("subtype", "")
+            ts = ev.get("timestamp_ms")
+            label = f"{t}/{sub}" if sub else t
+
+            ts_str = ""
+            if ts:
+                ts_str = f"[#414868]{datetime.fromtimestamp(ts / 1000, tz=UTC).strftime('%H:%M:%S')}[/] "
+
+            extra = ""
+            if t == "tool_call" and sub == "started":
+                tc = ev.get("tool_call", {})
+                tool_key = next(iter(tc), "")
+                args = tc.get(tool_key, {}).get("args", {})
+                target = args.get("path") or args.get("command") or args.get("globPattern") or ""
+                if "/" in target:
+                    target = target.rsplit("/", 1)[-1]
+                short_tool = tool_key.removesuffix("ToolCall")
+                extra = f" [#7aa2f7]{short_tool}[/] [#565f89]{target[:35]}[/]"
+            elif t == "tool_call" and sub == "completed":
+                extra = " [#565f89]done[/]"
+            elif t == "assistant":
+                content = ev.get("message", {}).get("content", [])
+                txt = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+                extra = f" [#c0caf5]{txt[:60]}[/]"
+            elif t == "result":
+                ok = not ev.get("is_error")
+                dur = ev.get("duration_ms", 0) // 1000
+                extra = f" [#9ece6a]OK[/] [#565f89]in {dur}s[/]" if ok else f" [#f7768e]FAILED[/] [#565f89]in {dur}s[/]"
+            elif t == "thinking":
+                extra = " [#414868]…[/]"
+                if sub == "completed":
+                    continue
+
+            panel.write(f"  {ts_str}[#414868]{label}[/]{extra}")
+
+    def _render_diff(self, key: str) -> None:
+        panel = self.query_one("#detail-pane", RichLog)
+        panel.clear()
+        agent = self._find_agent(key)
+        if not agent:
+            return
+
+        src = self._source_for(agent.machine)
+        if not src:
+            return
+
+        dot, color = STATE_INDICATOR.get(agent.state, ("○", "#565f89"))
+        panel.write(
+            f"[{color} bold]{dot} {agent.name}[/]  "
+            f"[{color}]{agent.state}[/]  "
+            f"[#bb9af7 bold]DIFF[/]  "
+            f"[#565f89]press D to return to events[/]"
+        )
+        panel.write(f"[#3b4261]{'─' * 72}[/]")
+
+        diff_text = src.get_diff(agent.name)
+        if not diff_text or diff_text.strip() == "":
+            panel.write("[#565f89]No uncommitted changes[/]")
+            return
+
+        for line in diff_text.splitlines():
+            escaped = line.replace("[", "\\[")
+            if line.startswith("+++") or line.startswith("---"):
+                panel.write(f"[bold]{escaped}[/]")
+            elif line.startswith("+"):
+                panel.write(f"[#9ece6a]{escaped}[/]")
+            elif line.startswith("-"):
+                panel.write(f"[#f7768e]{escaped}[/]")
+            elif line.startswith("@@"):
+                panel.write(f"[#7dcfff]{escaped}[/]")
+            elif line.startswith("diff "):
+                panel.write(f"[bold #c0caf5]{escaped}[/]")
+            else:
+                panel.write(f"[#565f89]{escaped}[/]")
+
     # ── Wave sidebar ──────────────────────────────────────────────────────
 
     def _render_waves(self) -> None:
@@ -419,6 +574,66 @@ class CursorTUI(App):
 
     def action_refresh_now(self) -> None:
         self._refresh_data()
+
+    def action_toggle_live(self) -> None:
+        if self._detail_mode == "live":
+            self._detail_mode = "events"
+            self._live_mode = False
+            if self.selected_agent:
+                self._render_detail(self.selected_agent)
+        else:
+            self._detail_mode = "live"
+            self._live_mode = True
+            if not self._detail_visible:
+                self._detail_visible = True
+                self.query_one("#detail-pane", RichLog).remove_class("collapsed")
+            if self.selected_agent:
+                self._render_live_log(self.selected_agent)
+
+    def action_show_diff(self) -> None:
+        if self._detail_mode == "diff":
+            self._detail_mode = "events"
+            if self.selected_agent:
+                self._render_detail(self.selected_agent)
+        else:
+            self._detail_mode = "diff"
+            self._live_mode = False
+            if not self._detail_visible:
+                self._detail_visible = True
+                self.query_one("#detail-pane", RichLog).remove_class("collapsed")
+            if self.selected_agent:
+                self._render_diff(self.selected_agent)
+
+    def action_toggle_filter(self) -> None:
+        bar = self.query_one("#filter-bar", Input)
+        self._filter_visible = not self._filter_visible
+        if self._filter_visible:
+            bar.remove_class("collapsed")
+            bar.focus()
+        else:
+            bar.add_class("collapsed")
+            self.query_one("#agent-table", DataTable).focus()
+
+    def action_clear_filter(self) -> None:
+        if self._filter_visible:
+            bar = self.query_one("#filter-bar", Input)
+            bar.value = ""
+            self._filter_text = ""
+            self._filter_visible = False
+            bar.add_class("collapsed")
+            self.query_one("#agent-table", DataTable).focus()
+            self._refresh_data()
+
+    def action_cycle_sort(self) -> None:
+        self._sort_index = (self._sort_index + 1) % len(self._sort_keys_cycle)
+        self._sort_key = self._sort_keys_cycle[self._sort_index]
+        self.notify(f"Sort: {self._sort_key}", severity="information")
+        self._refresh_data()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "filter-bar":
+            self._filter_text = event.value
+            self._refresh_data()
 
     def action_retry(self) -> None:
         agent = self._find_agent(self.selected_agent) if self.selected_agent else None

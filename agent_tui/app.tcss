@@ -106,6 +106,21 @@ Screen {
 }
 
 
+/* ── Filter bar ─────────────────────────────────────────────────────── */
+
+#filter-bar {
+    dock: top;
+    height: 1;
+    background: $surface-bright;
+    border-bottom: solid $border;
+    padding: 0 2;
+    color: $text;
+}
+
+#filter-bar.collapsed {
+    display: none;
+}
+
 /* ── Detail panel ────────────────────────────────────────────────────── */
 
 #detail-pane {
