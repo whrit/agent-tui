@@ -3,6 +3,36 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
+name = "agent-tui"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "textual" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "ruff" },
+    { name = "textual-dev" },
+]
+remote = [
+    { name = "asyncssh" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "asyncssh", marker = "extra == 'remote'", specifier = ">=2.17.0" },
+    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.400" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.0" },
+    { name = "textual", specifier = ">=1.0.0" },
+    { name = "textual-dev", marker = "extra == 'dev'", specifier = ">=1.0.0" },
+]
+provides-extras = ["remote", "dev"]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -326,36 +356,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b4/e1/48cedb2fe63626e91ded1edad159e2a4fb8b6906c4425eb7749673077ce7/cryptography-48.0.0-pp311-pypy311_pp73-manylinux_2_34_x86_64.whl", hash = "sha256:4defde8685ae324a9eb9d818717e93b4638ef67070ac9bc15b8ca85f63048355", size = 4666800, upload-time = "2026-05-04T22:59:27.474Z" },
     { url = "https://files.pythonhosted.org/packages/a2/ca/7e8365deec19afb2b2c7be7c1c0aa8f99633b54e90c570999acda93260fc/cryptography-48.0.0-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:db63bf618e5dea46c07de12e900fe1cdd2541e6dc9dbae772a70b7d4d4765f6a", size = 3739536, upload-time = "2026-05-04T22:59:29.61Z" },
 ]
-
-[[package]]
-name = "cursor-tui"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "textual" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "ruff" },
-    { name = "textual-dev" },
-]
-remote = [
-    { name = "asyncssh" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "asyncssh", marker = "extra == 'remote'", specifier = ">=2.17.0" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.400" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.0" },
-    { name = "textual", specifier = ">=1.0.0" },
-    { name = "textual-dev", marker = "extra == 'dev'", specifier = ">=1.0.0" },
-]
-provides-extras = ["remote", "dev"]
 
 [[package]]
 name = "frozenlist"

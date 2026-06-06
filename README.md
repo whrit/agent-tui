@@ -1,4 +1,4 @@
-# cursor-tui
+# agent-tui
 
 Live TUI dashboard for monitoring and managing cursor-agent fan-outs across
 multiple projects and machines.
@@ -9,7 +9,7 @@ one pane — whether the agents are on your laptop or a remote VPS.
 ## Install
 
 ```bash
-cd cursor-tui
+cd agent-tui
 uv venv && uv pip install -e ".[dev]"
 source .venv/bin/activate
 ```
@@ -18,44 +18,44 @@ source .venv/bin/activate
 
 ```bash
 # Watch agents in a local logs directory
-cursor-tui /path/to/logs
+agent-tui /path/to/logs
 
 # Or use the config file for multi-project/multi-machine setups
-cursor-tui init          # creates ~/.config/cursor-tui/config.toml
-cursor-tui watch         # launches with config
+agent-tui init          # creates ~/.config/agent-tui/config.toml
+agent-tui watch         # launches with config
 ```
 
 ## Three modes
 
-### `cursor-tui watch` (default)
+### `agent-tui watch` (default)
 
 The TUI dashboard. Shows all agents from all configured sources with live
 auto-refresh.
 
 ```bash
-cursor-tui /path/to/logs              # single dir, no config needed
-cursor-tui watch                       # uses ~/.config/cursor-tui/config.toml
-cursor-tui watch --config ./my.toml    # custom config
-cursor-tui watch --refresh 5           # refresh every 5s (default: 2)
+agent-tui /path/to/logs              # single dir, no config needed
+agent-tui watch                       # uses ~/.config/agent-tui/config.toml
+agent-tui watch --config ./my.toml    # custom config
+agent-tui watch --refresh 5           # refresh every 5s (default: 2)
 ```
 
-### `cursor-tui serve`
+### `agent-tui serve`
 
 HTTP log server. Deploy on a VPS so the TUI on your laptop can monitor remote
 agents and trigger actions.
 
 ```bash
 # Single project
-cursor-tui serve /path/to/logs --port 7400
+agent-tui serve /path/to/logs --port 7400
 
 # Multiple projects (one server, many dirs)
-cursor-tui serve \
+agent-tui serve \
   --project backend=/home/deploy/backend-v1/logs \
   --project worker=/home/deploy/cf-worker/logs \
   --port 7400
 
 # With action support (merge/retry/discard from remote TUI)
-cursor-tui serve \
+agent-tui serve \
   --project backend=/home/deploy/backend-v1/logs \
   --scripts-dir ~/.claude/skills/orchestrating-cursor-agents
 ```
@@ -73,14 +73,14 @@ cursor-tui serve \
 | GET | `/health` | Liveness check |
 | GET | `/agents` | Legacy: first project's agents |
 
-### `cursor-tui init`
+### `agent-tui init`
 
-Creates `~/.config/cursor-tui/config.toml` with an annotated example config.
+Creates `~/.config/agent-tui/config.toml` with an annotated example config.
 
 ## Configuration
 
 ```toml
-# ~/.config/cursor-tui/config.toml
+# ~/.config/agent-tui/config.toml
 
 [rates]
 input = 1.25      # $ per million input tokens
@@ -140,7 +140,7 @@ POSTs to the server.
 
 On your VPS, you need:
 1. Python 3.11+
-2. The `cursor-tui` package installed
+2. The `agent-tui` package installed
 3. The `orchestrating-cursor-agents` skill scripts (at `~/.claude/skills/orchestrating-cursor-agents/`)
 4. `jq` installed (`apt install jq`)
 
@@ -148,17 +148,17 @@ On your VPS, you need:
 
 ```bash
 # On VPS
-git clone <this-repo> ~/cursor-tui
-cd ~/cursor-tui && uv venv && uv pip install -e .
+git clone <this-repo> ~/agent-tui
+cd ~/agent-tui && uv venv && uv pip install -e .
 
 # Start the server (use systemd/screen/tmux to keep it running)
-cursor-tui serve \
+agent-tui serve \
   --project backend=/home/deploy/backend-v1/logs \
   --project worker=/home/deploy/cf-worker/logs \
   --port 7400
 
 # On your laptop — add to config
-cat >> ~/.config/cursor-tui/config.toml << 'EOF'
+cat >> ~/.config/agent-tui/config.toml << 'EOF'
 
 [machines.vps-backend]
 type = "http"
@@ -172,20 +172,20 @@ project = "worker"
 EOF
 
 # Launch
-cursor-tui watch
+agent-tui watch
 ```
 
 ### Systemd service (optional)
 
 ```ini
-# /etc/systemd/system/cursor-tui.service
+# /etc/systemd/system/agent-tui.service
 [Unit]
-Description=cursor-tui log server
+Description=agent-tui log server
 After=network.target
 
 [Service]
 User=deploy
-ExecStart=/home/deploy/cursor-tui/.venv/bin/cursor-tui serve \
+ExecStart=/home/deploy/agent-tui/.venv/bin/agent-tui serve \
   --project backend=/home/deploy/backend-v1/logs \
   --project worker=/home/deploy/cf-worker/logs \
   --port 7400
@@ -196,7 +196,7 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable --now cursor-tui
+sudo systemctl enable --now agent-tui
 ```
 
 ## Architecture
@@ -207,7 +207,7 @@ sudo systemctl enable --now cursor-tui
 │  Claude Code → cursor-agents       │     │  Claude Code → cursor-agents      │
 │    ↓ writes logs/                  │     │    ↓ writes logs/                 │
 │                                    │     │                                   │
-│  cursor-tui (TUI)                  │     │  cursor-tui serve                 │
+│  agent-tui (TUI)                  │     │  agent-tui serve                 │
 │    LocalSource → reads local logs  │     │    /projects/backend/agents       │
 │    HttpSource  → GET agents   ────────→  │    /projects/worker/agents        │
 │    HttpSource  → POST action  ────────→  │    /projects/*/action/* → scripts │
@@ -246,8 +246,8 @@ server calls them for remote actions.
 
 ```bash
 source .venv/bin/activate
-ruff check cursor_tui/     # lint
-ruff format cursor_tui/    # format
-pyright cursor_tui/        # type check
+ruff check agent_tui/     # lint
+ruff format agent_tui/    # format
+pyright agent_tui/        # type check
 pytest                     # tests
 ```

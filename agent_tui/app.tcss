@@ -1,4 +1,4 @@
-/* ── cursor-tui theme ────────────────────────────────────────────────── */
+/* ── agent-tui theme ────────────────────────────────────────────────── */
 /* Palette: slate bg, muted accents, high-contrast text                  */
 
 $bg: #1a1b26;

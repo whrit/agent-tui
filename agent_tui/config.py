@@ -4,11 +4,11 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-CONFIG_DIR = Path.home() / ".config" / "cursor-tui"
+CONFIG_DIR = Path.home() / ".config" / "agent-tui"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 EXAMPLE_CONFIG = """\
-# cursor-tui configuration
+# agent-tui configuration
 # Monitors cursor-agent fan-outs across multiple projects and machines.
 
 [rates]
@@ -31,7 +31,7 @@ repo = "."                    # git repo root (for cwd when running scripts)
 
 # ── Remote projects (VPS via HTTP server) ────────────────────────────────
 # Start the server on the VPS:
-#   cursor-tui serve --project backend=/home/deploy/backend/logs \\
+#   agent-tui serve --project backend=/home/deploy/backend/logs \\
 #                     --project worker=/home/deploy/worker/logs
 
 # [machines.vps-backend]

@@ -4,10 +4,10 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from cursor_tui.state import AgentState, TokenUsage
+from agent_tui.state import AgentState, TokenUsage
 
 if TYPE_CHECKING:
-    from cursor_tui.config import MachineConfig
+    from agent_tui.config import MachineConfig
 
 
 class LogSource(Protocol):
@@ -42,7 +42,7 @@ class LocalSource:
         return "local"
 
     def scan(self, stall_secs: int = 60) -> list[AgentState]:
-        from cursor_tui.state import scan_agents
+        from agent_tui.state import scan_agents
 
         agents = scan_agents(self._dir, stall_secs)
         for a in agents:

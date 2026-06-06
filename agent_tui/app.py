@@ -12,9 +12,9 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, RichLog, Static
 
-from cursor_tui.config import AppConfig
-from cursor_tui.sources import LogSource, create_source, scan_all
-from cursor_tui.state import AgentState, TokenUsage, fmt_cost, fmt_spend
+from agent_tui.config import AppConfig
+from agent_tui.sources import LogSource, create_source, scan_all
+from agent_tui.state import AgentState, TokenUsage, fmt_cost, fmt_spend
 
 # ── State indicators ─────────────────────────────────────────────────────────
 # Dot + color for each state. Scannable at a glance.
@@ -81,7 +81,7 @@ class ConfirmDialog(ModalScreen[bool]):
 
 class CursorTUI(App):
     CSS_PATH = "app.tcss"
-    TITLE = "cursor-tui"
+    TITLE = "agent-tui"
 
     BINDINGS = [  # noqa: RUF012
         Binding("q", "quit", "Quit", priority=True),
@@ -116,7 +116,7 @@ class CursorTUI(App):
         self._multi_machine = False
 
         if logs_dir and not config:
-            from cursor_tui.config import MachineConfig
+            from agent_tui.config import MachineConfig
 
             self._cfg.machines = [MachineConfig(name="local", type="local", logs_dir=logs_dir)]
 
@@ -130,7 +130,7 @@ class CursorTUI(App):
     def compose(self) -> ComposeResult:
         # Header
         with Horizontal(id="header"):
-            yield Static("cursor-tui", id="header-title")
+            yield Static("agent-tui", id="header-title")
             yield Static("", id="header-stats")
 
         # Status strip

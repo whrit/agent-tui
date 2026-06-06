@@ -1,5 +1,5 @@
 [project]
-name = "cursor-tui"
+name = "agent-tui"
 version = "0.1.0"
 description = "Live TUI dashboard for cursor-agent orchestration"
 requires-python = ">=3.11"
@@ -17,7 +17,7 @@ dev = [
 ]
 
 [project.scripts]
-cursor-tui = "cursor_tui.__main__:main"
+agent-tui = "agent_tui.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -46,7 +46,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["cursor_tui"]
+known-first-party = ["agent_tui"]
 
 [tool.ruff.format]
 quote-style = "double"

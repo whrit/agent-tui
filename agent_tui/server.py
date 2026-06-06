@@ -6,7 +6,7 @@ import subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from cursor_tui.state import AgentState, scan_agents
+from agent_tui.state import AgentState, scan_agents
 
 # Route patterns
 _RE_PROJECT_AGENTS = re.compile(r"^/projects/([^/]+)/agents$")
@@ -222,7 +222,7 @@ def run_server(
 
     server = HTTPServer((host, port), LogHandler)
     proj_list = ", ".join(f"{n}={p}" for n, p in LogHandler.projects.items())
-    print(f"cursor-tui server on {host}:{port}")
+    print(f"agent-tui server on {host}:{port}")
     print(f"  projects: {proj_list}")
     print(f"  scripts:  {LogHandler.scripts_dir or '(none — actions disabled)'}")
     print("  GET  /projects                              — list all projects")

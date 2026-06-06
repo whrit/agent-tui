@@ -8,8 +8,8 @@ def _detect_scripts_dir() -> str | None:
 
 
 def cmd_tui(args):
-    from cursor_tui.app import CursorTUI
-    from cursor_tui.config import AppConfig, ensure_config
+    from agent_tui.app import CursorTUI
+    from agent_tui.config import AppConfig, ensure_config
 
     if args.config:
         cfg = AppConfig.load(Path(args.config))
@@ -18,7 +18,7 @@ def cmd_tui(args):
         cfg = AppConfig.load()
 
     if args.logs_dir != "./logs":
-        from cursor_tui.config import MachineConfig
+        from agent_tui.config import MachineConfig
 
         cfg.machines = [MachineConfig(name="local", type="local", logs_dir=args.logs_dir)]
 
@@ -33,7 +33,7 @@ def cmd_tui(args):
 
 
 def cmd_serve(args):
-    from cursor_tui.server import run_server
+    from agent_tui.server import run_server
 
     projects = None
     if args.project:
@@ -56,7 +56,7 @@ def cmd_serve(args):
 
 
 def cmd_init(args):
-    from cursor_tui.config import ensure_config
+    from agent_tui.config import ensure_config
 
     path = ensure_config()
     print(f"Config written to {path}")
@@ -89,7 +89,7 @@ def main():
     srv_p.add_argument("--scripts-dir", default=None)
 
     # Init config
-    sub.add_parser("init", help="Create default config at ~/.config/cursor-tui/config.toml")
+    sub.add_parser("init", help="Create default config at ~/.config/agent-tui/config.toml")
 
     args = parser.parse_args()
 
