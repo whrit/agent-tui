@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from textual import work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SeverityLevel
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
@@ -788,7 +788,15 @@ class CursorTUI(App):
                 stderr=subprocess.DEVNULL,
             )
 
-    def notify(self, message: str, *, title: str = "", severity: str = "information", timeout: float = 5, markup: bool = True) -> None:
+    def notify(  # type: ignore[override]
+        self,
+        message: str,
+        *,
+        title: str = "",
+        severity: SeverityLevel = "information",
+        timeout: float | None = None,
+        markup: bool = True,
+    ) -> None:
         ts = datetime.now(tz=UTC).strftime("%H:%M:%S")
         self._notification_log.append((ts, severity, str(message)))
         if len(self._notification_log) > 50:
