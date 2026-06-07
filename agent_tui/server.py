@@ -58,6 +58,8 @@ class LogHandler(BaseHTTPRequestHandler):
             first = next(iter(self.projects), None)
             if first:
                 self._serve_agent_detail(first, m.group(1))
+            else:
+                self._json(404, {"error": "no projects configured"})
             return
 
         self._json(
@@ -107,7 +109,10 @@ class LogHandler(BaseHTTPRequestHandler):
         if "?" in self.path:
             import urllib.parse
             qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
-            stall_secs = int(qs.get("stall_secs", [str(self.stall_secs)])[0])
+            try:
+                stall_secs = int(qs.get("stall_secs", [str(self.stall_secs)])[0])
+            except (ValueError, IndexError):
+                stall_secs = self.stall_secs
         agents = scan_agents(logs_dir, stall_secs)
         self._json(
             200,
@@ -185,7 +190,10 @@ class LogHandler(BaseHTTPRequestHandler):
         if "?" in self.path:
             import urllib.parse
             qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
-            lines = int(qs.get("lines", ["50"])[0])
+            try:
+                lines = int(qs.get("lines", ["50"])[0])
+            except (ValueError, IndexError):
+                lines = 50
         log_path = logs_dir / f"{name}.jsonl"
         if not log_path.exists():
             self._json(404, {"error": f"agent '{name}' log not found"})

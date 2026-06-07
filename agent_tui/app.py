@@ -12,6 +12,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Input, RichLog, Static
 
+from agent_tui import __version__
 from agent_tui.config import AppConfig
 from agent_tui.sources import LogSource, create_source, scan_all
 from agent_tui.state import AgentState, TokenUsage, fmt_cost, fmt_spend
@@ -93,6 +94,8 @@ class CommandPalette(ModalScreen[str | None]):
         ("m", "Merge selected agent"),
         ("x", "Discard selected agent"),
         ("c", "Clean all terminal worktrees"),
+        ("M", "Merge all DONE agents (bulk)"),
+        ("n", "Show notification history"),
         ("p", "Force refresh"),
         ("Tab", "Cycle focus between panels"),
         ("?", "Show this command palette"),
@@ -148,6 +151,8 @@ class CursorTUI(App):
         Binding("d", "show_diff", "Diff"),
         Binding("slash", "toggle_filter", "Filter", show=False),
         Binding("s", "cycle_sort", "Sort"),
+        Binding("M", "merge_all_ok", "Merge All", show=False),
+        Binding("n", "show_notifications", "Notifs", show=False),
         Binding("escape", "clear_filter", "Clear", show=False, priority=True),
         Binding("question_mark", "show_palette", "Help"),
         Binding("tab", "focus_next", "Focus", show=False),
@@ -165,8 +170,10 @@ class CursorTUI(App):
     ):
         super().__init__()
         self._cfg = config or AppConfig()
+        self.theme = self._cfg.display.theme
         self.refresh_interval = refresh_interval
         self._agents: list[AgentState] = []
+        self._all_agents: list[AgentState] = []
         self._detail_visible = True
         self._waves_visible = False
         self._detail_mode = "events"  # "events" | "diff" | "live"
@@ -177,6 +184,9 @@ class CursorTUI(App):
         self._sort_index = 0
         self._sources: list[LogSource] = []
         self._multi_machine = False
+        self._prev_states: dict[str, str] = {}
+        self._notification_log: list[tuple[str, str, str]] = []
+        self._table_keys: set[str] = set()
 
         if logs_dir and not config:
             from agent_tui.config import MachineConfig
@@ -193,7 +203,7 @@ class CursorTUI(App):
     def compose(self) -> ComposeResult:
         # Header
         with Horizontal(id="header"):
-            yield Static("agent-tui", id="header-title")
+            yield Static("◈ agent-tui", id="header-title")
             yield Static("", id="header-stats")
 
         # Status strip
@@ -211,22 +221,14 @@ class CursorTUI(App):
         # Detail panel (starts visible)
         yield RichLog(id="detail-pane", markup=True, wrap=True)
 
-        # Footer
+        # Footer — essentials only; ? for full list
         yield Static(
-            " [#7aa2f7 bold]q[/] quit  "
-            "[#7aa2f7 bold]j/k[/] nav  "
+            " [#7aa2f7 bold]j/k[/] nav  "
             "[#7aa2f7 bold]enter[/] detail  "
-            "[#7aa2f7 bold]w[/] waves  "
-            "[#7aa2f7 bold]l[/] live  "
-            "[#7aa2f7 bold]d[/] diff  "
-            "[#7aa2f7 bold]/[/] filter  "
-            "[#7aa2f7 bold]s[/] sort  "
             "[#7aa2f7 bold]r[/] retry  "
             "[#7aa2f7 bold]m[/] merge  "
-            "[#7aa2f7 bold]x[/] discard  "
-            "[#7aa2f7 bold]c[/] clean  "
-            "[#7aa2f7 bold]p[/] refresh  "
-            "[#7aa2f7 bold]?[/] help  ",
+            "[#7aa2f7 bold]/[/] filter  "
+            "[#7aa2f7 bold]?[/] all keys",
             id="footer",
         )
 
@@ -242,13 +244,24 @@ class CursorTUI(App):
         table.add_column("Tools", key="tools", width=5)
         table.add_column("Spend", key="spend", width=12)
         table.add_column("Detail", key="detail")
+        wave_pane = self.query_one("#wave-pane", RichLog)
+        wave_pane.styles.width = self._cfg.display.wave_sidebar_width
         self._refresh_data()
         self.set_interval(self.refresh_interval, self._refresh_data)
+        self.set_interval(1.0, self._tick_running_agents)
 
     # ── Data refresh ──────────────────────────────────────────────────────
 
     def _refresh_data(self) -> None:
+        self._scan_in_background()
+
+    @work(thread=True, exclusive=True)
+    def _scan_in_background(self) -> None:
         all_agents = scan_all(self._sources, self._cfg.display.stall_secs)
+        self.call_from_thread(self._apply_scan_results, all_agents)
+
+    def _apply_scan_results(self, all_agents: list[AgentState]) -> None:
+        self._check_state_transitions(all_agents)
         self._all_agents = all_agents
         self._agents = self._apply_filter(all_agents)
         self._agents = self._apply_sort(self._agents)
@@ -258,8 +271,8 @@ class CursorTUI(App):
         if self._detail_visible and self.selected_agent:
             if self._detail_mode == "live":
                 self._render_live_log(self.selected_agent)
-            elif self._detail_mode == "diff":
-                pass  # diff is rendered on-demand, not on refresh
+            elif self._detail_mode in ("diff", "notifications"):
+                pass
             else:
                 self._render_detail(self.selected_agent)
         if self._waves_visible:
@@ -286,48 +299,51 @@ class CursorTUI(App):
         fn = key_map.get(self._sort_key, key_map["name"])
         return sorted(agents, key=fn)
 
+    def _build_row_cells(self, a: AgentState) -> dict[str, str]:
+        r = self._cfg.rates
+        dot, color = STATE_INDICATOR.get(a.state, ("○", "#565f89"))
+        spend = fmt_spend(a, r.input, r.output, r.cache)
+        detail_text = a.detail[:48]
+        if a.state in ("run", "STALL"):
+            pct = min(a.wall_clock_s / 300, 1.0)
+            bar = "▓" * int(pct * 8) + "░" * (8 - int(pct * 8))
+            detail_text = f"{bar} {a.detail[:36]}"
+        cells: dict[str, str] = {}
+        if self._multi_machine:
+            cells["machine"] = f"[#565f89]{a.machine}[/]"
+        cells.update({
+            "dot": f"[{color}]{dot}[/]",
+            "name": a.name,
+            "state": f"[{color}]{a.state}[/]",
+            "hb": _fmt_hb(a.heartbeat_s),
+            "action": a.action[:30],
+            "tools": str(a.tool_count),
+            "spend": spend,
+            "detail": detail_text,
+        })
+        return cells
+
     def _update_table(self) -> None:
         table = self.query_one("#agent-table", DataTable)
-        r = self._cfg.rates
+        new_keys: set[str] = set()
 
-        prev_key: str | None = None
-        if table.row_count:
-            with contextlib.suppress(Exception):
-                prev_key = str(table.get_row_at(table.cursor_row)[0]) if not self._multi_machine else None
-                if self._multi_machine and table.cursor_row < len(self._agents):
-                    a = self._agents[table.cursor_row]
-                    prev_key = f"{a.machine}:{a.name}"
-
-        table.clear()
         for a in self._agents:
-            dot, color = STATE_INDICATOR.get(a.state, ("○", "#565f89"))
-            spend = fmt_spend(a, r.input, r.output, r.cache)
-            detail_text = a.detail[:48]
-            if a.state in ("run", "STALL"):
-                pct = min(a.wall_clock_s / 300, 1.0)
-                bar = "▓" * int(pct * 8) + "░" * (8 - int(pct * 8))
-                detail_text = f"{bar} {a.detail[:36]}"
-            row: dict[str, str] = {
-                "dot": f"[{color}]{dot}[/]",
-                "name": a.name,
-                "state": f"[{color}]{a.state}[/]",
-                "hb": _fmt_hb(a.heartbeat_s),
-                "action": a.action[:30],
-                "tools": str(a.tool_count),
-                "spend": spend,
-                "detail": detail_text,
-            }
-            if self._multi_machine:
-                row["machine"] = f"[#565f89]{a.machine}[/]"
             key = f"{a.machine}:{a.name}" if self._multi_machine else a.name
-            table.add_row(*row.values(), key=key)
+            new_keys.add(key)
+            cells = self._build_row_cells(a)
 
-        if prev_key:
-            for i, a in enumerate(self._agents):
-                k = f"{a.machine}:{a.name}" if self._multi_machine else a.name
-                if k == prev_key:
-                    table.move_cursor(row=i)
-                    break
+            if key in self._table_keys:
+                for col, val in cells.items():
+                    with contextlib.suppress(Exception):
+                        table.update_cell(key, col, val)
+            else:
+                table.add_row(*cells.values(), key=key)
+
+        for old_key in self._table_keys - new_keys:
+            with contextlib.suppress(Exception):
+                table.remove_row(old_key)
+
+        self._table_keys = new_keys
 
     def _update_header(self) -> None:
         src_agents = getattr(self, "_all_agents", self._agents)
@@ -339,6 +355,9 @@ class CursorTUI(App):
         machines = " ".join(f"[#565f89]{s.machine_name}[/]" for s in self._sources)
 
         filter_tag = f"  [#e0af68]filter: {filtered}/{total}[/]" if self._filter_text else ""
+
+        title = self.query_one("#header-title", Static)
+        title.update(f"[#7aa2f7 bold]◈ agent-tui[/]  [#414868]v{__version__}[/]")
 
         stats = self.query_one("#header-stats", Static)
         stats.update(
@@ -361,7 +380,7 @@ class CursorTUI(App):
         if r.input and r.output:
             cost = fmt_cost(total_tokens, r.input, r.output, r.cache)
             strip.update(
-                f" [#c0caf5 bold]{cost}[/] total  [#565f89]│[/]  "
+                f" [#e0af68 bold]{cost}[/] total  [#3b4261]│[/]  "
                 f"[#565f89]{total_tokens.input:,} in  {total_tokens.output:,} out  {total_tokens.cache:,} cache[/]"
             )
         else:
@@ -737,6 +756,96 @@ class CursorTUI(App):
             self._filter_text = event.value
             self._refresh_data()
 
+    # ── State transitions + notifications ───────────────────────────────
+
+    def _check_state_transitions(self, new_agents: list[AgentState]) -> None:
+        for a in new_agents:
+            key = f"{a.machine}:{a.name}"
+            prev = self._prev_states.get(key)
+            if prev and prev != a.state:
+                if a.state == "DONE":
+                    self._desktop_notify(f"✓ {a.name} finished", f"Duration: {_fmt_hb(a.duration_s)}")
+                elif a.state in ("ERROR", "DIED"):
+                    self._desktop_notify(f"✗ {a.name} failed", a.detail[:50])
+            self._prev_states[key] = a.state
+
+    def _desktop_notify(self, title: str, body: str) -> None:
+        import subprocess
+        import sys
+
+        title = title.replace('"', "'").replace("\\", "")
+        body = body.replace('"', "'").replace("\\", "")
+        if sys.platform == "darwin":
+            subprocess.Popen(
+                ["osascript", "-e", f'display notification "{body}" with title "{title}"'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        elif sys.platform == "linux":
+            subprocess.Popen(
+                ["notify-send", title, body],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    def notify(self, message: str, *, title: str = "", severity: str = "information", timeout: float = 5, markup: bool = True) -> None:
+        ts = datetime.now(tz=UTC).strftime("%H:%M:%S")
+        self._notification_log.append((ts, severity, str(message)))
+        if len(self._notification_log) > 50:
+            self._notification_log.pop(0)
+        super().notify(message, title=title, severity=severity, timeout=timeout, markup=markup)
+
+    def action_show_notifications(self) -> None:
+        self._detail_mode = "notifications"
+        if not self._detail_visible:
+            self._detail_visible = True
+            self.query_one("#detail-pane", RichLog).remove_class("collapsed")
+        panel = self.query_one("#detail-pane", RichLog)
+        panel.clear()
+        panel.write("[#7aa2f7 bold]Notification History[/]")
+        panel.write(f"[#3b4261]{'─' * 72}[/]")
+        for ts, sev, msg in reversed(self._notification_log):
+            color = {"information": "#7dcfff", "warning": "#e0af68", "error": "#f7768e"}.get(sev, "#565f89")
+            panel.write(f"  [#414868]{ts}[/]  [{color}]{msg}[/]")
+        if not self._notification_log:
+            panel.write("  [#565f89]No notifications yet[/]")
+
+    def action_merge_all_ok(self) -> None:
+        ok_agents = [a for a in self._agents if a.state == "DONE"]
+        if not ok_agents:
+            self.notify("No DONE agents to merge", severity="information")
+            return
+        names = ", ".join(a.name for a in ok_agents[:5])
+        if len(ok_agents) > 5:
+            names += f" +{len(ok_agents) - 5} more"
+
+        def _do_merge_all(confirmed: bool | None) -> None:
+            if confirmed:
+                for a in ok_agents:
+                    src = self._source_for(a.machine)
+                    if src:
+                        self._do_action(src, "merge", a.name)
+
+        self.push_screen(ConfirmDialog(f"Merge {len(ok_agents)} DONE agent(s)?\n{names}"), _do_merge_all)
+
+    # ── Per-second ticker ─────────────────────────────────────────────────
+
+    def _tick_running_agents(self) -> None:
+        table = self.query_one("#agent-table", DataTable)
+        for a in self._agents:
+            if a.state not in ("run", "STALL"):
+                continue
+            a.wall_clock_s += 1
+            a.heartbeat_s = max(0, a.heartbeat_s - 1)
+            key = f"{a.machine}:{a.name}" if self._multi_machine else a.name
+            with contextlib.suppress(Exception):
+                table.update_cell(key, "hb", _fmt_hb(a.heartbeat_s))
+                pct = min(a.wall_clock_s / 300, 1.0)
+                bar = "▓" * int(pct * 8) + "░" * (8 - int(pct * 8))
+                table.update_cell(key, "detail", f"{bar} {a.detail[:36]}")
+
+    # ── Agent actions ─────────────────────────────────────────────────────
+
     def action_retry(self) -> None:
         agent = self._find_agent(self.selected_agent) if self.selected_agent else None
         if not agent:
@@ -790,7 +899,7 @@ class CursorTUI(App):
         def _do_clean(confirmed: bool | None) -> None:
             if confirmed:
                 for src in self._sources:
-                    self._do_action(src, "clean", "")
+                    self._do_action(src, "clean", "_all")
 
         self.push_screen(ConfirmDialog(f"Clean {terminal} terminal agent worktree(s)?"), _do_clean)
 

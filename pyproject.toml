@@ -19,6 +19,7 @@ dev = [
 
 [project.scripts]
 agent-tui = "agent_tui.__main__:main"
+atui = "agent_tui.__main__:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -156,8 +156,9 @@ All actions work on both local and remote agents:
 
 | Key | Action |
 |-----|--------|
-| `r` | Retry selected agent |
+| `r` | Retry all errored agents |
 | `m` | Merge selected agent (with confirmation) |
+| `M` | Merge all DONE agents (bulk) |
 | `x` | Discard selected agent (with confirmation) |
 | `c` | Clean all terminal worktrees (with confirmation) |
 
@@ -183,13 +184,16 @@ uv pip install websockets    # enable WS on both server and client
 | `/` | Open filter bar |
 | `s` | Cycle sort order |
 | `Escape` | Clear filter / close palette |
-| `r` | Retry selected agent |
+| `r` | Retry all errored agents |
 | `m` | Merge selected agent (with confirmation) |
+| `M` | Merge all DONE agents (bulk) |
 | `x` | Discard selected agent (with confirmation) |
 | `c` | Clean all terminal worktrees (with confirmation) |
+| `n` | Show notification history |
 | `p` | Force refresh |
 | `?` | Command palette (searchable help) |
 | `Tab` | Cycle focus between panels |
+| `Shift+Tab` | Focus previous panel |
 | `q` | Quit |
 
 ## Configuration

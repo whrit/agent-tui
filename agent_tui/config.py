@@ -47,6 +47,8 @@ repo = "."                    # git repo root (for cwd when running scripts)
 [display]
 refresh = 2.0          # seconds between refreshes
 stall_secs = 60        # heartbeat age (s) that counts as a stall
+# theme = "tokyo-night"  # also: catppuccin-mocha, dracula, nord, textual-light, gruvbox, monokai
+# wave_sidebar_width = 30
 
 [scripts]
 # Path to the orchestrating-cursor-agents skill scripts.
@@ -80,6 +82,8 @@ class RatesConfig:
 class DisplayConfig:
     refresh: float = 2.0
     stall_secs: int = 60
+    theme: str = "tokyo-night"
+    wave_sidebar_width: int = 30
 
 
 @dataclass
@@ -97,7 +101,9 @@ class AppConfig:
         try:
             with open(path, "rb") as f:
                 raw = tomllib.load(f)
-        except Exception:
+        except Exception as e:
+            import sys
+            print(f"agent-tui: failed to parse config {path}: {e} — using defaults", file=sys.stderr)
             return AppConfig._defaults()
         return AppConfig._from_dict(raw)
 
@@ -124,6 +130,8 @@ class AppConfig:
             cfg.display = DisplayConfig(
                 refresh=float(d.get("refresh", 2.0)),
                 stall_secs=int(d.get("stall_secs", 60)),
+                theme=str(d.get("theme", "tokyo-night")),
+                wave_sidebar_width=int(d.get("wave_sidebar_width", 30)),
             )
 
         if "scripts" in raw and "dir" in raw["scripts"]:

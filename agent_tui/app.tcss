@@ -19,6 +19,10 @@ $magenta: #bb9af7;
 Screen {
     background: $bg;
     color: $text;
+    scrollbar-background: $surface;
+    scrollbar-color: $border;
+    scrollbar-color-hover: $text-muted;
+    scrollbar-color-active: $accent;
 }
 
 /* ── Header ──────────────────────────────────────────────────────────── */
@@ -51,7 +55,8 @@ Screen {
 #status-strip {
     dock: top;
     height: 1;
-    background: $surface-bright;
+    background: $surface;
+    border-bottom: solid $border;
     padding: 0 2;
     color: $text-muted;
 }
@@ -91,10 +96,18 @@ Screen {
     text-style: bold;
 }
 
+#agent-table > .datatable--even-row {
+    background: #1e2030;
+}
+
+#agent-table > .datatable--odd-row {
+    background: $bg;
+}
+
 /* ── Wave sidebar ────────────────────────────────────────────────────── */
 
 #wave-pane {
-    width: 32;
+    width: 30;
     background: $surface;
     border-left: solid $border;
     padding: 1;
@@ -124,7 +137,9 @@ Screen {
 /* ── Detail panel ────────────────────────────────────────────────────── */
 
 #detail-pane {
-    height: 16;
+    height: 1fr;
+    min-height: 8;
+    max-height: 24;
     background: $surface;
     border-top: solid $border;
     padding: 1 2;

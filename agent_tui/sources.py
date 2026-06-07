@@ -263,7 +263,8 @@ class WsSource:
             while True:
                 try:
                     async with websockets.connect(self._ws_url) as ws:
-                        self._connected = True
+                        with self._lock:
+                            self._connected = True
                         async for msg in ws:
                             try:
                                 data = json.loads(msg)
@@ -276,7 +277,8 @@ class WsSource:
                             except (json.JSONDecodeError, KeyError):
                                 pass
                 except Exception:
-                    self._connected = False
+                    with self._lock:
+                        self._connected = False
                     import time
                     time.sleep(5)  # reconnect delay
 
@@ -294,8 +296,9 @@ class WsSource:
         with self._lock:
             if self._agents:
                 return list(self._agents)
+            connected = self._connected
         # Not connected yet or no data — return offline sentinel
-        if not self._connected:
+        if not connected:
             sentinel = AgentState(name=f"[{self._name}]", state="OFFLINE")
             sentinel.detail = f"WebSocket connecting to {self._ws_url}..."
             sentinel.machine = self._name

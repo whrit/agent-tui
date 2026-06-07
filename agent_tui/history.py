@@ -191,6 +191,7 @@ class HistoryApp(App):
                 shutil.copy2(err, tmp / err.name)
 
         except OSError as e:
+            shutil.rmtree(tmp, ignore_errors=True)
             self.notify(f"Failed to decompress: {e}", severity="error")
             return
 
