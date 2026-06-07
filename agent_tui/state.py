@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,7 +36,9 @@ class AgentState:
     last_tool_subtype: str = ""
     recent_events: list[dict] = field(default_factory=list)
     err_tail: str = ""
+    result_json: dict | None = None
     machine: str = "local"
+    wave: str = ""
 
 
 def _pid_alive(pid: int) -> bool:
@@ -83,8 +86,27 @@ def _extract_assistant_text(event: dict) -> str:
     return " ".join(parts).replace("\n", " ").strip()[:80]
 
 
+_WAVE_PATTERNS = [
+    re.compile(r'^(w\d+)-'),           # w1-schema, w2-api
+    re.compile(r'^(wave\d+)-'),        # wave1-schema
+    re.compile(r'^(review)-'),         # review-correctness
+    re.compile(r'^(fix)-'),            # fix-src-api
+    re.compile(r'^(verify)-'),         # verify-fix
+    re.compile(r'^(round\d+)-'),       # round1-review
+]
+
+
+def _detect_wave(name: str) -> str:
+    for pattern in _WAVE_PATTERNS:
+        m = pattern.match(name)
+        if m:
+            return m.group(1)
+    return ""
+
+
 def parse_agent(logs_dir: Path, name: str, stall_secs: int = 60, max_recent: int = 30) -> AgentState:
     agent = AgentState(name=name)
+    agent.wave = _detect_wave(name)
     log_path = logs_dir / f"{name}.jsonl"
     if not log_path.exists():
         agent.state = "NO_LOG"
@@ -169,6 +191,12 @@ def parse_agent(logs_dir: Path, name: str, stall_secs: int = 60, max_recent: int
             output=usage.get("outputTokens", 0),
             cache=usage.get("cacheReadTokens", 0),
         )
+        # Load RESULT.json from worktree if available
+        wt = Path.home() / ".cursor" / "worktrees" / logs_dir.parent.name / name
+        rj_path = wt / "RESULT.json"
+        if rj_path.exists():
+            with contextlib.suppress(json.JSONDecodeError, OSError):
+                agent.result_json = json.loads(rj_path.read_text())
     elif alive:
         agent.state = "STALL" if agent.heartbeat_s > stall_secs else "run"
     else:

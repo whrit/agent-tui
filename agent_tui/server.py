@@ -11,7 +11,7 @@ from agent_tui.state import AgentState, scan_agents
 # Route patterns
 _RE_PROJECT_AGENTS = re.compile(r"^/projects/([^/]+)/agents$")
 _RE_PROJECT_AGENT = re.compile(r"^/projects/([^/]+)/agent/([^/]+)$")
-_RE_PROJECT_ACTION = re.compile(r"^/projects/([^/]+)/action/(merge|retry|discard)/([^/]+)$")
+_RE_PROJECT_ACTION = re.compile(r"^/projects/([^/]+)/action/(merge|retry|discard|clean)/([^/]+)$")
 _RE_PROJECT_AGENT_TAIL = re.compile(r"^/projects/([^/]+)/agent/([^/]+)/tail$")
 _RE_PROJECT_AGENT_DIFF = re.compile(r"^/projects/([^/]+)/agent/([^/]+)/diff$")
 # Legacy single-project routes (backward compat)
@@ -33,7 +33,7 @@ class LogHandler(BaseHTTPRequestHandler):
             return
 
         # Multi-project routes
-        if m := _RE_PROJECT_AGENTS.match(self.path):
+        if m := _RE_PROJECT_AGENTS.match(self.path.split("?")[0]):
             self._serve_agents(m.group(1))
             return
         if m := _RE_PROJECT_AGENT.match(self.path):
@@ -103,7 +103,12 @@ class LogHandler(BaseHTTPRequestHandler):
         if not logs_dir:
             self._json(404, {"error": f"project '{project}' not found", "available": list(self.projects.keys())})
             return
-        agents = scan_agents(logs_dir, self.stall_secs)
+        stall_secs = self.stall_secs
+        if "?" in self.path:
+            import urllib.parse
+            qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+            stall_secs = int(qs.get("stall_secs", [str(self.stall_secs)])[0])
+        agents = scan_agents(logs_dir, stall_secs)
         self._json(
             200,
             {
@@ -139,6 +144,7 @@ class LogHandler(BaseHTTPRequestHandler):
             "merge": ("merge.sh", [str(logs_dir), "merge", agent_name]),
             "discard": ("merge.sh", [str(logs_dir), "discard", agent_name]),
             "retry": ("retry.sh", [str(logs_dir)]),
+            "clean": ("clean.sh", [str(logs_dir)]),
         }
         script_name, args = script_map[action]
         script_path = self.scripts_dir / script_name
@@ -270,6 +276,7 @@ def _agent_to_dict(a: AgentState) -> dict:
             "cache": a.tokens.cache,
         },
         "recent_events": a.recent_events[-20:],
+        "result_json": a.result_json,
     }
 
 
@@ -310,8 +317,85 @@ def run_server(
     print("  POST /projects/<name>/action/discard/<agent>— discard agent")
     print("  GET  /projects/<name>/agent/<id>/tail    — last N events (live)")
     print("  GET  /projects/<name>/agent/<id>/diff    — worktree diff")
+    # Optional WebSocket server
+    ws_port = port + 1
+    ws_actual = _start_ws_server(LogHandler.projects, stall_secs, host, ws_port)
+    if ws_actual:
+        print(f"  WebSocket on {host}:{ws_actual} (push interval: 2s)")
+    else:
+        print("  WebSocket: disabled (install 'websockets' package to enable)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nshutting down")
         server.shutdown()
+
+
+def _start_ws_server(
+    projects: dict[str, Path],
+    stall_secs: int,
+    host: str,
+    port: int,
+    interval: float = 2.0,
+):
+    """Start a WebSocket server that pushes agent state snapshots."""
+    try:
+        import asyncio
+
+        import websockets  # type: ignore[import-unresolved]
+    except ImportError:
+        return None
+
+    connected: set = set()
+
+    async def handler(ws):
+        connected.add(ws)
+        try:
+            # Send initial full snapshot
+            snapshot = _build_snapshot(projects, stall_secs)
+            await ws.send(json.dumps({"type": "snapshot", **snapshot}))
+            # Keep connection alive — pushes happen from the broadcast loop
+            async for _msg in ws:
+                pass  # clients don't send anything, but this keeps the connection open
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            connected.discard(ws)
+
+    async def broadcast_loop():
+        prev_hash = ""
+        while True:
+            await asyncio.sleep(interval)
+            snapshot = _build_snapshot(projects, stall_secs)
+            payload = json.dumps({"type": "update", **snapshot})
+            cur_hash = payload
+            if cur_hash != prev_hash and connected:
+                prev_hash = cur_hash
+                dead = set()
+                for ws in connected:
+                    try:
+                        await ws.send(payload)
+                    except Exception:
+                        dead.add(ws)
+                connected.difference_update(dead)
+
+    async def main():
+        async with websockets.serve(handler, host, port):
+            await broadcast_loop()
+
+    def run():
+        asyncio.run(main())
+
+    import threading
+    t = threading.Thread(target=run, daemon=True, name="ws-server")
+    t.start()
+    return port
+
+
+def _build_snapshot(projects: dict[str, Path], stall_secs: int) -> dict:
+    """Build a snapshot of all agents across all projects."""
+    all_agents = {}
+    for proj_name, logs_dir in projects.items():
+        agents = scan_agents(logs_dir, stall_secs)
+        all_agents[proj_name] = [_agent_to_dict(a) for a in agents]
+    return {"projects": all_agents}

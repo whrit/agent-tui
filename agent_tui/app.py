@@ -32,11 +32,6 @@ STATE_INDICATOR: dict[str, tuple[str, str]] = {
 }
 
 
-def _state_markup(state: str) -> str:
-    dot, color = STATE_INDICATOR.get(state, ("○", "#565f89"))
-    return f"[{color}]{dot} {state}[/]"
-
-
 def _fmt_hb(s: int) -> str:
     if s < 60:
         return f"{s}s"
@@ -76,6 +71,61 @@ class ConfirmDialog(ModalScreen[bool]):
         self.dismiss(False)
 
 
+# ── Command palette ───────────────────────────────────────────────────────────
+
+
+class CommandPalette(ModalScreen[str | None]):
+    BINDINGS = [  # noqa: RUF012
+        Binding("escape", "dismiss_palette", "Close"),
+    ]
+
+    _COMMAND_LIST = [  # noqa: RUF012
+        ("j / k", "Navigate agents up/down"),
+        ("Enter", "Toggle detail panel"),
+        ("l", "Toggle live log tailing"),
+        ("d", "Toggle diff preview"),
+        ("w", "Toggle wave sidebar"),
+        ("/ + text", "Filter agents by name"),
+        (":state", "Filter by state (:error, :done, :run, :stall)"),
+        ("Escape", "Clear filter / close palette"),
+        ("s", "Cycle sort order (name → state → cost → duration → heartbeat)"),
+        ("r", "Retry selected agent"),
+        ("m", "Merge selected agent"),
+        ("x", "Discard selected agent"),
+        ("c", "Clean all terminal worktrees"),
+        ("p", "Force refresh"),
+        ("Tab", "Cycle focus between panels"),
+        ("?", "Show this command palette"),
+        ("q", "Quit"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="palette-box"):
+            yield Static("[#7aa2f7 bold]Commands[/]  [#565f89]press ? or Escape to close[/]", id="palette-title")
+            yield Input(placeholder="search commands...", id="palette-search")
+            yield RichLog(id="palette-list", markup=True, wrap=True)
+
+    def on_mount(self) -> None:
+        self._render_commands("")
+        self.query_one("#palette-search", Input).focus()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "palette-search":
+            self._render_commands(event.value)
+
+    def _render_commands(self, query: str) -> None:
+        panel = self.query_one("#palette-list", RichLog)
+        panel.clear()
+        q = query.lower()
+        for key, desc in self._COMMAND_LIST:
+            if q and q not in key.lower() and q not in desc.lower():
+                continue
+            panel.write(f"  [#7aa2f7 bold]{key:>14}[/]  [#c0caf5]{desc}[/]")
+
+    def action_dismiss_palette(self) -> None:
+        self.dismiss(None)
+
+
 # ── Main app ─────────────────────────────────────────────────────────────────
 
 
@@ -90,6 +140,7 @@ class CursorTUI(App):
         Binding("r", "retry", "Retry"),
         Binding("m", "merge", "Merge"),
         Binding("x", "discard", "Discard"),
+        Binding("c", "clean_all", "Clean"),
         Binding("enter", "toggle_detail", "Detail"),
         Binding("w", "toggle_waves", "Waves"),
         Binding("p", "refresh_now", "Refresh"),
@@ -98,6 +149,7 @@ class CursorTUI(App):
         Binding("slash", "toggle_filter", "Filter", show=False),
         Binding("s", "cycle_sort", "Sort"),
         Binding("escape", "clear_filter", "Clear", show=False, priority=True),
+        Binding("question_mark", "show_palette", "Help"),
         Binding("tab", "focus_next", "Focus", show=False),
         Binding("shift+tab", "focus_previous", "Focus", show=False),
     ]
@@ -117,7 +169,6 @@ class CursorTUI(App):
         self._agents: list[AgentState] = []
         self._detail_visible = True
         self._waves_visible = False
-        self._live_mode = False
         self._detail_mode = "events"  # "events" | "diff" | "live"
         self._filter_text = ""
         self._filter_visible = False
@@ -173,7 +224,9 @@ class CursorTUI(App):
             "[#7aa2f7 bold]r[/] retry  "
             "[#7aa2f7 bold]m[/] merge  "
             "[#7aa2f7 bold]x[/] discard  "
-            "[#7aa2f7 bold]p[/] refresh",
+            "[#7aa2f7 bold]c[/] clean  "
+            "[#7aa2f7 bold]p[/] refresh  "
+            "[#7aa2f7 bold]?[/] help  ",
             id="footer",
         )
 
@@ -249,6 +302,11 @@ class CursorTUI(App):
         for a in self._agents:
             dot, color = STATE_INDICATOR.get(a.state, ("○", "#565f89"))
             spend = fmt_spend(a, r.input, r.output, r.cache)
+            detail_text = a.detail[:48]
+            if a.state in ("run", "STALL"):
+                pct = min(a.wall_clock_s / 300, 1.0)
+                bar = "▓" * int(pct * 8) + "░" * (8 - int(pct * 8))
+                detail_text = f"{bar} {a.detail[:36]}"
             row: dict[str, str] = {
                 "dot": f"[{color}]{dot}[/]",
                 "name": a.name,
@@ -257,7 +315,7 @@ class CursorTUI(App):
                 "action": a.action[:30],
                 "tools": str(a.tool_count),
                 "spend": spend,
-                "detail": a.detail[:48],
+                "detail": detail_text,
             }
             if self._multi_machine:
                 row["machine"] = f"[#565f89]{a.machine}[/]"
@@ -351,55 +409,74 @@ class CursorTUI(App):
             parts.append(f"[#565f89]tokens[/] {agent.tokens.input:,}in {agent.tokens.output:,}out")
             if r.input and r.output:
                 parts.append(f"[#565f89]cost[/] {fmt_cost(agent.tokens, r.input, r.output, r.cache)}")
+        if agent.state in ("run", "STALL"):
+            elapsed = agent.wall_clock_s
+            pct = min(elapsed / 300, 1.0)
+            bar_width = 20
+            filled = int(pct * bar_width)
+            bar = "█" * filled + "░" * (bar_width - filled)
+            parts.append(f"[#7dcfff]{bar}[/] {_fmt_hb(elapsed)}")
         panel.write("  ".join(parts))
 
         if agent.err_tail:
             panel.write(f"[#f7768e]stderr: {agent.err_tail}[/]")
 
+        if agent.result_json:
+            status = agent.result_json.get("status", "?")
+            files = agent.result_json.get("files", [])
+            notes = agent.result_json.get("notes", "")
+            status_color = "#9ece6a" if status == "ok" else "#f7768e"
+            panel.write(
+                f"  [{status_color}]RESULT: {status}[/]  "
+                f"[#565f89]{len(files)} file{'s' if len(files) != 1 else ''}[/]  "
+                f"{notes[:50]}"
+            )
+            for f in files[:5]:
+                panel.write(f"    [#565f89]{f}[/]")
+            if len(files) > 5:
+                panel.write(f"    [#565f89]… +{len(files) - 5} more[/]")
+
         panel.write(f"[#3b4261]{'─' * 72}[/]")
 
-        # Event log
         for ev in agent.recent_events[-20:]:
-            t = ev.get("type", "?")
-            sub = ev.get("subtype", "")
-            ts = ev.get("timestamp_ms")
-            label = f"{t}/{sub}" if sub else t
+            self._render_event(panel, ev)
 
-            # Timestamp
-            ts_str = ""
-            if ts:
-                ts_str = f"[#414868]{datetime.fromtimestamp(ts / 1000, tz=UTC).strftime('%H:%M:%S')}[/] "
+    def _render_event(self, panel: RichLog, ev: dict) -> None:
+        t = ev.get("type", "?")
+        sub = ev.get("subtype", "")
+        ts = ev.get("timestamp_ms")
+        label = f"{t}/{sub}" if sub else t
 
-            # Event-specific detail
-            extra = ""
-            if t == "tool_call" and sub == "started":
-                tc = ev.get("tool_call", {})
-                tool_key = next(iter(tc), "")
-                args = tc.get(tool_key, {}).get("args", {})
-                target = args.get("path") or args.get("command") or args.get("globPattern") or ""
-                if "/" in target:
-                    target = target.rsplit("/", 1)[-1]
-                short_tool = tool_key.removesuffix("ToolCall")
-                extra = f" [#7aa2f7]{short_tool}[/] [#565f89]{target[:35]}[/]"
-            elif t == "tool_call" and sub == "completed":
-                extra = " [#565f89]done[/]"
-            elif t == "assistant":
-                content = ev.get("message", {}).get("content", [])
-                txt = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-                extra = f" [#c0caf5]{txt[:60]}[/]"
-            elif t == "result":
-                ok = not ev.get("is_error")
-                dur = ev.get("duration_ms", 0) // 1000
-                if ok:
-                    extra = f" [#9ece6a]OK[/] [#565f89]in {dur}s[/]"
-                else:
-                    extra = f" [#f7768e]FAILED[/] [#565f89]in {dur}s[/]"
-            elif t == "thinking":
-                extra = " [#414868]…[/]"
-                if sub == "completed":
-                    continue
+        ts_str = ""
+        if ts:
+            ts_str = f"[#414868]{datetime.fromtimestamp(ts / 1000, tz=UTC).strftime('%H:%M:%S')}[/] "
 
-            panel.write(f"  {ts_str}[#414868]{label}[/]{extra}")
+        extra = ""
+        if t == "tool_call" and sub == "started":
+            tc = ev.get("tool_call", {})
+            tool_key = next(iter(tc), "")
+            args = tc.get(tool_key, {}).get("args", {})
+            target = args.get("path") or args.get("command") or args.get("globPattern") or ""
+            if "/" in target:
+                target = target.rsplit("/", 1)[-1]
+            short_tool = tool_key.removesuffix("ToolCall")
+            extra = f" [#7aa2f7]{short_tool}[/] [#565f89]{target[:35]}[/]"
+        elif t == "tool_call" and sub == "completed":
+            extra = " [#565f89]done[/]"
+        elif t == "assistant":
+            content = ev.get("message", {}).get("content", [])
+            txt = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+            extra = f" [#c0caf5]{txt[:60]}[/]"
+        elif t == "result":
+            ok = not ev.get("is_error")
+            dur = ev.get("duration_ms", 0) // 1000
+            extra = f" [#9ece6a]OK[/] [#565f89]in {dur}s[/]" if ok else f" [#f7768e]FAILED[/] [#565f89]in {dur}s[/]"
+        elif t == "thinking":
+            if sub == "completed":
+                return
+            extra = " [#414868]…[/]"
+
+        panel.write(f"  {ts_str}[#414868]{label}[/]{extra}")
 
     def _render_live_log(self, key: str) -> None:
         panel = self.query_one("#detail-pane", RichLog)
@@ -423,41 +500,7 @@ class CursorTUI(App):
 
         events = src.tail_log(agent.name, lines=40)
         for ev in events:
-            t = ev.get("type", "?")
-            sub = ev.get("subtype", "")
-            ts = ev.get("timestamp_ms")
-            label = f"{t}/{sub}" if sub else t
-
-            ts_str = ""
-            if ts:
-                ts_str = f"[#414868]{datetime.fromtimestamp(ts / 1000, tz=UTC).strftime('%H:%M:%S')}[/] "
-
-            extra = ""
-            if t == "tool_call" and sub == "started":
-                tc = ev.get("tool_call", {})
-                tool_key = next(iter(tc), "")
-                args = tc.get(tool_key, {}).get("args", {})
-                target = args.get("path") or args.get("command") or args.get("globPattern") or ""
-                if "/" in target:
-                    target = target.rsplit("/", 1)[-1]
-                short_tool = tool_key.removesuffix("ToolCall")
-                extra = f" [#7aa2f7]{short_tool}[/] [#565f89]{target[:35]}[/]"
-            elif t == "tool_call" and sub == "completed":
-                extra = " [#565f89]done[/]"
-            elif t == "assistant":
-                content = ev.get("message", {}).get("content", [])
-                txt = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
-                extra = f" [#c0caf5]{txt[:60]}[/]"
-            elif t == "result":
-                ok = not ev.get("is_error")
-                dur = ev.get("duration_ms", 0) // 1000
-                extra = f" [#9ece6a]OK[/] [#565f89]in {dur}s[/]" if ok else f" [#f7768e]FAILED[/] [#565f89]in {dur}s[/]"
-            elif t == "thinking":
-                extra = " [#414868]…[/]"
-                if sub == "completed":
-                    continue
-
-            panel.write(f"  {ts_str}[#414868]{label}[/]{extra}")
+            self._render_event(panel, ev)
 
     def _render_diff(self, key: str) -> None:
         panel = self.query_one("#detail-pane", RichLog)
@@ -504,33 +547,87 @@ class CursorTUI(App):
     def _render_waves(self) -> None:
         panel = self.query_one("#wave-pane", RichLog)
         panel.clear()
-        panel.write("[#7aa2f7 bold]Agents[/]")
-        panel.write(f"[#3b4261]{'━' * 28}[/]")
 
-        machines: dict[str, list[AgentState]] = {}
+        # Try wave grouping first
+        waves: dict[str, list[AgentState]] = {}
+        ungrouped: list[AgentState] = []
         for a in self._agents:
-            machines.setdefault(a.machine, []).append(a)
+            if a.wave:
+                waves.setdefault(a.wave, []).append(a)
+            else:
+                ungrouped.append(a)
 
-        for m, agents in machines.items():
-            done = sum(1 for a in agents if a.state == "DONE")
-            err = sum(1 for a in agents if a.state in ("ERROR", "DIED"))
-            run = sum(1 for a in agents if a.state in ("run", "STALL"))
-            panel.write("")
-            panel.write(
-                f"[#c0caf5 bold]{m}[/]  [#9ece6a]{done}[/][#565f89]/[/][#f7768e]{err}[/][#565f89]/[/][#7dcfff]{run}[/]"
-            )
-            panel.write(f"[#3b4261]{'─' * 28}[/]")
-            for a in agents:
-                dot, color = STATE_INDICATOR.get(a.state, ("○", "#565f89"))
-                name = a.name[:20]
-                detail = ""
-                if a.state == "run":
-                    detail = f"[#414868]{a.action[:14]}[/]"
-                elif a.state in ("ERROR", "DIED"):
-                    detail = f"[#414868]{a.detail[:14]}[/]"
-                elif a.state == "DONE":
-                    detail = f"[#414868]{_fmt_hb(a.duration_s)}[/]"
-                panel.write(f"  [{color}]{dot}[/] {name}  {detail}")
+        if waves:
+            panel.write("[#7aa2f7 bold]Waves[/]")
+            panel.write(f"[#3b4261]{'━' * 28}[/]")
+            for wave_name in sorted(waves.keys()):
+                agents = waves[wave_name]
+                done = sum(1 for a in agents if a.state == "DONE")
+                total = len(agents)
+                all_done = done == total
+                wave_color = "#9ece6a" if all_done else "#7dcfff"
+                wave_dot = "●" if all_done else "◐"
+                panel.write("")
+                panel.write(
+                    f"[{wave_color}]{wave_dot}[/] [#c0caf5 bold]{wave_name}[/]  "
+                    f"[#565f89]{done}/{total}[/]"
+                )
+                panel.write(f"[#3b4261]{'─' * 28}[/]")
+                for a in agents:
+                    dot, color = STATE_INDICATOR.get(a.state, ("○", "#565f89"))
+                    name_short = a.name
+                    if a.wave and name_short.startswith(a.wave + "-"):
+                        name_short = name_short[len(a.wave) + 1:]
+                    name_short = name_short[:18]
+                    detail = ""
+                    if a.state == "run":
+                        detail = f"[#414868]{a.action[:12]}[/]"
+                    elif a.state in ("ERROR", "DIED"):
+                        detail = f"[#414868]{a.detail[:12]}[/]"
+                    elif a.state == "DONE":
+                        detail = f"[#414868]{_fmt_hb(a.duration_s)}[/]"
+                    panel.write(f"  [{color}]{dot}[/] {name_short}  {detail}")
+
+            # Show ungrouped agents below waves if any
+            if ungrouped:
+                panel.write("")
+                panel.write("[#c0caf5 bold]Other[/]")
+                panel.write(f"[#3b4261]{'─' * 28}[/]")
+                for a in ungrouped:
+                    dot, color = STATE_INDICATOR.get(a.state, ("○", "#565f89"))
+                    panel.write(f"  [{color}]{dot}[/] {a.name[:18]}")
+        else:
+            # Fall back to machine grouping (original behavior)
+            panel.write("[#7aa2f7 bold]Agents[/]")
+            panel.write(f"[#3b4261]{'━' * 28}[/]")
+
+            machines: dict[str, list[AgentState]] = {}
+            for a in self._agents:
+                machines.setdefault(a.machine, []).append(a)
+
+            for m, agents in machines.items():
+                done = sum(1 for a in agents if a.state == "DONE")
+                err = sum(1 for a in agents if a.state in ("ERROR", "DIED"))
+                run = sum(1 for a in agents if a.state in ("run", "STALL"))
+                panel.write("")
+                panel.write(
+                    f"[#c0caf5 bold]{m}[/]  "
+                    f"[#9ece6a]{done}[/][#565f89]/[/]"
+                    f"[#f7768e]{err}[/][#565f89]/[/]"
+                    f"[#7dcfff]{run}[/]"
+                )
+                panel.write(f"[#3b4261]{'─' * 28}[/]")
+                for a in agents:
+                    dot, color = STATE_INDICATOR.get(a.state, ("○", "#565f89"))
+                    name = a.name[:20]
+                    detail = ""
+                    if a.state == "run":
+                        detail = f"[#414868]{a.action[:14]}[/]"
+                    elif a.state in ("ERROR", "DIED"):
+                        detail = f"[#414868]{a.detail[:14]}[/]"
+                    elif a.state == "DONE":
+                        detail = f"[#414868]{_fmt_hb(a.duration_s)}[/]"
+                    panel.write(f"  [{color}]{dot}[/] {name}  {detail}")
 
     # ── Actions ───────────────────────────────────────────────────────────
 
@@ -559,7 +656,12 @@ class CursorTUI(App):
         if self._detail_visible:
             panel.remove_class("collapsed")
             if self.selected_agent:
-                self._render_detail(self.selected_agent)
+                if self._detail_mode == "live":
+                    self._render_live_log(self.selected_agent)
+                elif self._detail_mode == "diff":
+                    self._render_diff(self.selected_agent)
+                else:
+                    self._render_detail(self.selected_agent)
         else:
             panel.add_class("collapsed")
 
@@ -578,12 +680,10 @@ class CursorTUI(App):
     def action_toggle_live(self) -> None:
         if self._detail_mode == "live":
             self._detail_mode = "events"
-            self._live_mode = False
             if self.selected_agent:
                 self._render_detail(self.selected_agent)
         else:
             self._detail_mode = "live"
-            self._live_mode = True
             if not self._detail_visible:
                 self._detail_visible = True
                 self.query_one("#detail-pane", RichLog).remove_class("collapsed")
@@ -597,7 +697,6 @@ class CursorTUI(App):
                 self._render_detail(self.selected_agent)
         else:
             self._detail_mode = "diff"
-            self._live_mode = False
             if not self._detail_visible:
                 self._detail_visible = True
                 self.query_one("#detail-pane", RichLog).remove_class("collapsed")
@@ -623,6 +722,9 @@ class CursorTUI(App):
             bar.add_class("collapsed")
             self.query_one("#agent-table", DataTable).focus()
             self._refresh_data()
+
+    def action_show_palette(self) -> None:
+        self.push_screen(CommandPalette())
 
     def action_cycle_sort(self) -> None:
         self._sort_index = (self._sort_index + 1) % len(self._sort_keys_cycle)
@@ -677,6 +779,20 @@ class CursorTUI(App):
 
         label = f"[{agent.machine}] " if self._multi_machine else ""
         self.push_screen(ConfirmDialog(f"Discard {label}'{agent.name}' worktree?"), _do_discard)
+
+    def action_clean_all(self) -> None:
+        src_agents = getattr(self, "_all_agents", self._agents)
+        terminal = sum(1 for a in src_agents if a.state in ("DONE", "ERROR", "DIED"))
+        if terminal == 0:
+            self.notify("No terminal agents to clean", severity="information")
+            return
+
+        def _do_clean(confirmed: bool | None) -> None:
+            if confirmed:
+                for src in self._sources:
+                    self._do_action(src, "clean", "")
+
+        self.push_screen(ConfirmDialog(f"Clean {terminal} terminal agent worktree(s)?"), _do_clean)
 
     @work(thread=True)
     def _do_action(self, source: LogSource, action: str, agent_name: str) -> None:

@@ -63,6 +63,20 @@ def cmd_init(args):
     print("Edit it to add remote machines, token rates, etc.")
 
 
+def cmd_history(args):
+    from agent_tui.history import HistoryApp
+    app = HistoryApp(history_dir=args.history_dir)
+    result = app.run()
+    # If the user opened an archived run, launch the main TUI on the decompressed logs
+    if result:
+        from agent_tui.app import CursorTUI
+        tui = CursorTUI(logs_dir=result)
+        tui.run()
+        # Clean up temp dir
+        import shutil
+        shutil.rmtree(result, ignore_errors=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Live TUI dashboard for cursor-agent orchestration")
     sub = parser.add_subparsers(dest="command")
@@ -91,12 +105,18 @@ def main():
     # Init config
     sub.add_parser("init", help="Create default config at ~/.config/agent-tui/config.toml")
 
+    # History browser
+    hist_p = sub.add_parser("history", help="Browse archived fan-out runs")
+    hist_p.add_argument("--history-dir", default=str(Path.home() / ".cursor-agent-history"))
+
     args = parser.parse_args()
 
     if args.command == "serve":
         cmd_serve(args)
     elif args.command == "init":
         cmd_init(args)
+    elif args.command == "history":
+        cmd_history(args)
     elif args.command == "watch":
         cmd_tui(args)
     else:

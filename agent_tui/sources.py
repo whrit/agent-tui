@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -65,6 +66,7 @@ class LocalSource:
             "merge": ("merge.sh", [str(self._dir), "merge", agent_name]),
             "discard": ("merge.sh", [str(self._dir), "discard", agent_name]),
             "retry": ("retry.sh", [str(self._dir)]),
+            "clean": ("clean.sh", [str(self._dir)]),
         }
         if action not in script_map:
             return False, f"unknown action: {action}"
@@ -146,7 +148,7 @@ class HttpSource:
         import urllib.error
         import urllib.request
 
-        url = f"{self._url}/projects/{self._project}/agents"
+        url = f"{self._url}/projects/{self._project}/agents?stall_secs={stall_secs}"
         try:
             with urllib.request.urlopen(url, timeout=5) as resp:
                 data = json.loads(resp.read())
@@ -216,6 +218,7 @@ def _agent_from_server_dict(d: dict) -> AgentState:
     a.wall_clock_s = d.get("wall_clock_s", 0)
     a.is_error = d.get("is_error", False)
     a.err_tail = d.get("err_tail", "")
+    a.result_json = d.get("result_json")
     tok = d.get("tokens", {})
     a.tokens = TokenUsage(
         input=tok.get("input", 0),
@@ -227,9 +230,139 @@ def _agent_from_server_dict(d: dict) -> AgentState:
     return a
 
 
+class WsSource:
+    """WebSocket source — receives pushed state updates instead of polling."""
+
+    def __init__(self, config: MachineConfig):
+        self._name = config.name
+        self._project = config.project or config.name
+        self._ws_url = config.url.rstrip("/").replace("http://", "ws://").replace("https://", "wss://")
+        # Increment port by 1 for WS (server convention)
+        parts = self._ws_url.rsplit(":", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            self._ws_url = f"{parts[0]}:{int(parts[1]) + 1}"
+        self._agents: list[AgentState] = []
+        self._connected = False
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._start()
+
+    def _start(self) -> None:
+        self._thread = threading.Thread(target=self._run_ws, daemon=True, name=f"ws-{self._name}")
+        self._thread.start()
+
+    def _run_ws(self) -> None:
+        try:
+            import asyncio
+
+            import websockets  # type: ignore[import-unresolved]
+        except ImportError:
+            return
+
+        async def connect():
+            while True:
+                try:
+                    async with websockets.connect(self._ws_url) as ws:
+                        self._connected = True
+                        async for msg in ws:
+                            try:
+                                data = json.loads(msg)
+                                proj_agents = data.get("projects", {}).get(self._project, [])
+                                agents = [_agent_from_server_dict(d) for d in proj_agents]
+                                for a in agents:
+                                    a.machine = self._name
+                                with self._lock:
+                                    self._agents = agents
+                            except (json.JSONDecodeError, KeyError):
+                                pass
+                except Exception:
+                    self._connected = False
+                    import time
+                    time.sleep(5)  # reconnect delay
+
+        asyncio.run(connect())
+
+    @property
+    def machine_name(self) -> str:
+        return self._name
+
+    @property
+    def source_type(self) -> str:
+        return "ws"
+
+    def scan(self, stall_secs: int = 60) -> list[AgentState]:
+        with self._lock:
+            if self._agents:
+                return list(self._agents)
+        # Not connected yet or no data — return offline sentinel
+        if not self._connected:
+            sentinel = AgentState(name=f"[{self._name}]", state="OFFLINE")
+            sentinel.detail = f"WebSocket connecting to {self._ws_url}..."
+            sentinel.machine = self._name
+            return [sentinel]
+        return []
+
+    def run_action(self, action: str, agent_name: str) -> tuple[bool, str]:
+        # Actions still use HTTP POST (rare operations, need confirmation)
+        import urllib.error
+        import urllib.request
+        # Derive HTTP URL from WS URL
+        http_url = self._ws_url.replace("ws://", "http://").replace("wss://", "https://")
+        parts = http_url.rsplit(":", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            http_url = f"{parts[0]}:{int(parts[1]) - 1}"
+        url = f"{http_url}/projects/{self._project}/action/{action}/{agent_name}"
+        try:
+            req = urllib.request.Request(url, method="POST", data=b"")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            return data.get("ok", False), data.get("output", "")[:200]
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+            return False, f"remote action failed: {e}"
+
+    def tail_log(self, agent_name: str, lines: int = 50) -> list[dict]:
+        # Fall back to HTTP for tail
+        import urllib.error
+        import urllib.request
+        http_url = self._ws_url.replace("ws://", "http://").replace("wss://", "https://")
+        parts = http_url.rsplit(":", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            http_url = f"{parts[0]}:{int(parts[1]) - 1}"
+        url = f"{http_url}/projects/{self._project}/agent/{agent_name}/tail?lines={lines}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                data = json.loads(resp.read())
+            return data.get("events", [])
+        except (urllib.error.URLError, OSError, json.JSONDecodeError):
+            return []
+
+    def get_diff(self, agent_name: str, stat_only: bool = False) -> str:
+        import urllib.error
+        import urllib.request
+        http_url = self._ws_url.replace("ws://", "http://").replace("wss://", "https://")
+        parts = http_url.rsplit(":", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            http_url = f"{parts[0]}:{int(parts[1]) - 1}"
+        url = f"{http_url}/projects/{self._project}/agent/{agent_name}/diff"
+        if stat_only:
+            url += "?stat=1"
+        try:
+            with urllib.request.urlopen(url, timeout=10) as resp:
+                return resp.read().decode()
+        except (urllib.error.URLError, OSError):
+            return "(remote diff unavailable)"
+
+    def close(self) -> None:
+        pass
+
+
 def create_source(config: MachineConfig, scripts_dir: Path | None = None) -> LogSource:
     if config.type == "http":
-        return HttpSource(config)
+        try:
+            import websockets  # type: ignore[import-unresolved]  # noqa: F401
+            return WsSource(config)
+        except ImportError:
+            return HttpSource(config)
     if config.type == "ssh":
         import warnings
 

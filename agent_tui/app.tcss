@@ -146,6 +146,38 @@ Screen {
     color: $text-dim;
 }
 
+/* ── Command palette ────────────────────────────────────────────────── */
+
+CommandPalette {
+    align: center middle;
+}
+
+#palette-box {
+    width: 72;
+    height: 24;
+    background: $surface;
+    border: thick $border-focus;
+    padding: 1 2;
+}
+
+#palette-title {
+    height: 1;
+    color: $accent;
+    margin-bottom: 1;
+}
+
+#palette-search {
+    height: 1;
+    margin-bottom: 1;
+    background: $surface-bright;
+    border: solid $border;
+}
+
+#palette-list {
+    height: 1fr;
+    background: $surface;
+}
+
 /* ── Confirm dialog ──────────────────────────────────────────────────── */
 
 ConfirmDialog {
