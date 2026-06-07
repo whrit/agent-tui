@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from textual.notifications import SeverityLevel
 from datetime import UTC, datetime
 from pathlib import Path
 
 from textual import work
-from textual.app import App, ComposeResult, SeverityLevel
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
